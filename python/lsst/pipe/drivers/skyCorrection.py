@@ -45,6 +45,8 @@ class SkyCorrectionConfig(Config):
     doBgModel2 = Field(dtype=bool, default=True, doc="Do cleanup background model subtraction?")
     doSky = Field(dtype=bool, default=True, doc="Do sky frame subtraction?")
     binning = Field(dtype=int, default=8, doc="Binning factor for constructing focal-plane images")
+    hasFakes = Field(dtype=bool, default=False,
+                     doc="Should be set to True if fake sources were added to the data before processing.")
 
     def setDefaults(self):
         Config.setDefaults(self)
@@ -64,6 +66,11 @@ class SkyCorrectionTask(BatchPoolTask):
         BatchPoolTask.__init__(self, *args, **kwargs)
         self.makeSubtask("maskObjects")
         self.makeSubtask("sky")
+
+        if self.config.hasFakes:
+            self.calexpType = "fakes_calexp"
+        else:
+            self.calexpType = "calexp"
 
     @classmethod
     def _makeArgumentParser(cls, *args, **kwargs):
@@ -122,7 +129,7 @@ class SkyCorrectionTask(BatchPoolTask):
             camera = expRef.get("camera")
 
             dataIdList = [ccdRef.dataId for ccdRef in expRef.subItems("ccd") if
-                          ccdRef.datasetExists("calexp")]
+                          ccdRef.datasetExists(self.calexpType)]
 
             exposures = pool.map(self.loadImage, dataIdList)
             if DEBUG:
@@ -201,7 +208,7 @@ class SkyCorrectionTask(BatchPoolTask):
             Resultant exposure.
         """
         cache.dataId = dataId
-        cache.exposure = cache.butler.get("calexp", dataId, immediate=True).clone()
+        cache.exposure = cache.butler.get(self.calexpType, dataId, immediate=True).clone()
         bgOld = cache.butler.get("calexpBackground", dataId, immediate=True)
         image = cache.exposure.getMaskedImage()
 

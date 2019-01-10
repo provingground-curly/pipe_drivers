@@ -43,11 +43,25 @@ class MultiBandDriverConfig(Config):
              "if we consider those footprints important to recover."),
     )
 
+    hasFakes = Field(
+        dtype=bool,
+        default=False,
+        doc="Should be set to True if fakes were inserted into the data being processed."
+    )
+
     def setDefaults(self):
         Config.setDefaults(self)
         self.forcedPhotCoadd.references.retarget(MultiBandReferencesTask)
 
+        if self.hasFakes:
+            self.detectCoaddSources.hasFakes = True
+            self.deblendCoaddSources.hasFakes = True
+            self.measureCoaddSources.hasFakes = True
+            self.forcedPhotCoadd.hasFakes = True
+
+
     def validate(self):
+
         for subtask in ("mergeCoaddDetections", "deblendCoaddSources", "measureCoaddSources",
                         "mergeCoaddMeasurements", "forcedPhotCoadd"):
             coaddName = getattr(self, subtask).coaddName
@@ -142,6 +156,10 @@ class MultiBandDriverTask(BatchPoolTask):
             self.measureCoaddSources.schema))
         self.makeSubtask("forcedPhotCoadd", refSchema=afwTable.Schema(
             self.mergeCoaddMeasurements.schema))
+        if self.config.hasFakes:
+            self.coaddType = "fakes_" + self.config.coaddName
+        else:
+            self.coaddType = self.config.coaddName
 
     def __reduce__(self):
         """Pickler"""
@@ -193,7 +211,6 @@ class MultiBandDriverTask(BatchPoolTask):
         pool = Pool("all")
         pool.cacheClear()
         pool.storeSet(butler=butler)
-
         # MultiBand measurements require that the detection stage be completed
         # before measurements can be made.
         #
@@ -211,11 +228,11 @@ class MultiBandDriverTask(BatchPoolTask):
             detectionList = []
             for patchRef in patchRefList:
                 if ("detectCoaddSources" in self.reuse and
-                        patchRef.datasetExists(self.config.coaddName + "Coadd_calexp", write=True)):
+                        patchRef.datasetExists(self.coaddType + "Coadd_calexp", write=True)):
                     self.log.info("Skipping detectCoaddSources for %s; output already exists." %
                                   patchRef.dataId)
                     continue
-                if not patchRef.datasetExists(self.config.coaddName + "Coadd"):
+                if not patchRef.datasetExists(self.coaddType + "Coadd"):
                     self.log.debug("Not processing %s; required input %sCoadd missing." %
                                    (patchRef.dataId, self.config.coaddName))
                     continue
@@ -224,7 +241,7 @@ class MultiBandDriverTask(BatchPoolTask):
             pool.map(self.runDetection, detectionList)
 
         patchRefList = [patchRef for patchRef in patchRefList if
-                        patchRef.datasetExists(self.config.coaddName + "Coadd_calexp") and
+                        patchRef.datasetExists(self.coaddType + "Coadd_calexp") and
                         patchRef.datasetExists(self.config.coaddName + "Coadd_det",
                                                write=self.config.doDetection)]
         dataIdList = [patchRef.dataId for patchRef in patchRefList]
@@ -292,7 +309,7 @@ class MultiBandDriverTask(BatchPoolTask):
                         # and we're starting over
                         patchReprocessing[patchId] = True
 
-        # Only process patches that have been identified as needing it
+        # Only process patches that have been identifiedz as needing it
         pool.map(self.runMeasurements, [dataId1 for dataId1 in dataIdList if not self.config.reprocessing or
                                         patchReprocessing[dataId1["patch"]]])
         pool.map(self.runMergeMeasurements, [idList for patchId, idList in patches.items() if
@@ -320,8 +337,7 @@ class MultiBandDriverTask(BatchPoolTask):
         """
         with self.logOperation("do detections on {}".format(patchRef.dataId)):
             idFactory = self.detectCoaddSources.makeIdFactory(patchRef)
-            coadd = patchRef.get(self.config.coaddName + "Coadd",
-                                 immediate=True)
+            coadd = patchRef.get(self.coaddType + "Coadd", immediate=True)
             expId = int(patchRef.get(self.config.coaddName + "CoaddId"))
             self.detectCoaddSources.emptyMetadata()
             detResults = self.detectCoaddSources.run(coadd, idFactory, expId=expId)
@@ -337,7 +353,7 @@ class MultiBandDriverTask(BatchPoolTask):
         @param dataIdList: List of data identifiers for the patch in different filters
         """
         with self.logOperation("merge detections from %s" % (dataIdList,)):
-            dataRefList = [getDataRef(cache.butler, dataId, self.config.coaddName + "Coadd_calexp") for
+            dataRefList = [getDataRef(cache.butler, dataId, self.coaddType + "Coadd_calexp") for
                            dataId in dataIdList]
             if ("mergeCoaddDetections" in self.reuse and
                     dataRefList[0].datasetExists(self.config.coaddName + "Coadd_mergeDet", write=True)):
@@ -364,7 +380,7 @@ class MultiBandDriverTask(BatchPoolTask):
             whether the patch requires reprocessing.
         """
         with self.logOperation("deblending %s" % (dataIdList,)):
-            dataRefList = [getDataRef(cache.butler, dataId, self.config.coaddName + "Coadd_calexp") for
+            dataRefList = [getDataRef(cache.butler, dataId, self.coaddType + "Coadd_calexp") for
                            dataId in dataIdList]
             reprocessing = False  # Does this patch require reprocessing?
             if ("deblendCoaddSources" in self.reuse and
@@ -418,8 +434,7 @@ class MultiBandDriverTask(BatchPoolTask):
             Data identifier for patch
         """
         with self.logOperation("measurements on %s" % (dataId,)):
-            dataRef = getDataRef(cache.butler, dataId,
-                                 self.config.coaddName + "Coadd_calexp")
+            dataRef = getDataRef(cache.butler, dataId, self.coaddType + "Coadd_calexp")
             if ("measureCoaddSources" in self.reuse and
                 not self.config.reprocessing and
                     dataRef.datasetExists(self.config.coaddName + "Coadd_meas", write=True)):
@@ -436,7 +451,7 @@ class MultiBandDriverTask(BatchPoolTask):
         @param dataIdList: List of data identifiers for the patch in different filters
         """
         with self.logOperation("merge measurements from %s" % (dataIdList,)):
-            dataRefList = [getDataRef(cache.butler, dataId, self.config.coaddName + "Coadd_calexp") for
+            dataRefList = [getDataRef(cache.butler, dataId, self.coaddType + "Coadd_calexp") for
                            dataId in dataIdList]
             if ("mergeCoaddMeasurements" in self.reuse and
                 not self.config.reprocessing and
@@ -456,7 +471,7 @@ class MultiBandDriverTask(BatchPoolTask):
         """
         with self.logOperation("forced photometry on %s" % (dataId,)):
             dataRef = getDataRef(cache.butler, dataId,
-                                 self.config.coaddName + "Coadd_calexp")
+                                 self.coaddType + "Coadd_calexp")
             if ("forcedPhotCoadd" in self.reuse and
                 not self.config.reprocessing and
                     dataRef.datasetExists(self.config.coaddName + "Coadd_forced_src", write=True)):

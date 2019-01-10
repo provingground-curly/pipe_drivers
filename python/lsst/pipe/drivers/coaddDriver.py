@@ -35,11 +35,17 @@ class CoaddDriverConfig(Config):
                         doc="Run detection on the coaddition product")
     detectCoaddSources = ConfigurableField(
         target=DetectCoaddSourcesTask, doc="Detect sources on coadd")
+    hasFakes = Field(dtype=bool, default=False,
+                     doc="Should be set to True if fake sources were added to the data before processing.")
 
     def setDefaults(self):
         self.makeCoaddTempExp.select.retarget(NullSelectImagesTask)
         self.assembleCoadd.select.retarget(NullSelectImagesTask)
         self.assembleCoadd.doWrite = False
+        if self.hasFakes:
+            self.detectCoaddSources.hasFakes = True
+            self.makeCoaddTempExp.hasFakes = True
+            self.assembleCoadd.hasFakes = True
 
     def validate(self):
         if self.makeCoaddTempExp.coaddName != self.coaddName:
@@ -94,6 +100,11 @@ class CoaddDriverTask(BatchPoolTask):
         self.makeSubtask("backgroundReference")
         self.makeSubtask("assembleCoadd")
         self.makeSubtask("detectCoaddSources")
+        if self.config.hasFakes:
+            self.calexpType = "fakes_calexp"
+        else:
+            self.calexpType = "calexp"
+
 
     def __reduce__(self):
         """Pickler"""
@@ -157,10 +168,9 @@ class CoaddDriverTask(BatchPoolTask):
         self.log.info("Non-empty tracts (%d): %s" % (len(tractPatchRefList),
                                                      [patchRefList[0].dataId["tract"] for patchRefList in
                                                       tractPatchRefList]))
-
         # Install the dataRef in the selectDataList
         for data in selectDataList:
-            data.dataRef = getDataRef(butler, data.dataId, "calexp")
+            data.dataRef = getDataRef(butler, data.dataId, self.calexpType)
 
         # Process the non-empty tracts
         return [self.run(patchRefList, butler, selectDataList) for patchRefList in tractPatchRefList]
@@ -206,7 +216,7 @@ class CoaddDriverTask(BatchPoolTask):
         @return a SelectStruct with a dataId instead of dataRef
         """
         try:
-            ref = getDataRef(cache.butler, selectId, "calexp")
+            ref = getDataRef(cache.butler, selectId, self.calexpType)
             self.log.info("Reading Wcs from %s" % (selectId,))
             md = ref.get("calexp_md", immediate=True)
             wcs = afwGeom.makeSkyWcs(md)
@@ -322,7 +332,10 @@ class CoaddDriverTask(BatchPoolTask):
                 detResults = self.detectCoaddSources.run(coadd, idFactory, expId=expId)
                 self.detectCoaddSources.write(detResults, patchRef)
         else:
-            patchRef.put(coadd, self.assembleCoadd.config.coaddName+"Coadd")
+            if self.config.hasFakes:
+                patchRef.put(coadd, "fakes_" + self.assembleCoadd.config.coaddName + "Coadd")
+            else:
+                patchRef.put(coadd, self.assembleCoadd.config.coaddName + "Coadd")
 
     def selectExposures(self, patchRef, selectDataList):
         """!Select exposures to operate upon, via the SelectImagesTask
